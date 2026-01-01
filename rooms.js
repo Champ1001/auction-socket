@@ -1,33 +1,89 @@
-const rooms = {};
+const rooms = new Map();
 
-export function createRoom(id, initialData) {
-  rooms[id] = {
-    state: initialData,
+export function createRoom(roomId) {
+  const room = {
+    id: roomId,
     clients: new Set(),
+    state: {
+      currentBid: 0,
+      highestBidder: null,
+    },
 
     join(ws, data) {
-      this.clients.add(ws);
-      ws.send(JSON.stringify({ type: "SYNC", state: this.state }));
+      ws.room = room;
+      ws.userId = data.userId;
+      ws.team = data.team;
+
+      room.clients.add(ws);
+
+      // Send only essential state
+      ws.send(JSON.stringify({
+        type: "STATE",
+        currentBid: room.state.currentBid,
+        highestBidder: room.state.highestBidder,
+      }));
+
+      room.broadcast({
+        type: "JOINED",
+        team: ws.team,
+      });
+    },
+
+    leave(ws) {
+      room.clients.delete(ws);
+
+      room.broadcast({
+        type: "LEFT",
+        team: ws.team,
+      });
+    },
+
+    placeBid(ws, data) {
+      const amount = Number(data.amount);
+      if (!amount || amount <= room.state.currentBid) return;
+
+      room.state.currentBid = amount;
+      room.state.highestBidder = ws.team;
+
+      room.broadcast({
+        type: "BID",
+        amount,
+        team: ws.team,
+      });
+    },
+
+    handleRTM(ws, data) {
+      room.broadcast({
+        type: "RTM",
+        team: ws.team,
+        action: data.action,
+      });
+    },
+
+    chat(ws, data) {
+      if (!data.text?.trim()) return;
+
+      room.broadcast({
+        type: "CHAT",
+        team: ws.team,
+        text: data.text.slice(0, 200), // limit size
+      });
     },
 
     broadcast(payload) {
-      this.clients.forEach(c =>
-        c.send(JSON.stringify(payload))
-      );
+      const msg = JSON.stringify(payload);
+      room.clients.forEach(client => {
+        if (client.readyState === 1) {
+          client.send(msg);
+        }
+      });
     },
-
-    placeBid({ userId }) {
-      this.state.currentBid += 10;
-      this.state.highestBidderId = userId;
-      this.broadcast({ type: "BID_UPDATE", state: this.state });
-    },
-
-    chat({ text, sender }) {
-      this.broadcast({ type: "CHAT", text, sender });
-    }
   };
+
+  rooms.set(roomId, room);
+  return room;
 }
 
-export function getRoom(id) {
-  return rooms[id];
+export function getRoom(roomId) {
+  return rooms.get(roomId);
 }
